@@ -1,0 +1,263 @@
+#!/usr/bin/env perl
+
+# #######################################################################
+# DESCRIPTION
+
+=head1 NAME
+
+check_ebn_versions - keep track of total number of EBN application versions
+
+=head1 AUTHORS
+
+Steve Huff <shuff at vecna dot org>
+Matthew Cox <mcox at cpan dot org
+
+=head1 SYNOPSIS
+
+This is used by Getopt::Long to produce --help output
+
+B<check_ebn_versions> [B<--help>] [B<-d>] [B<-z>]
+
+=head2 -c, --critical
+
+At what number of application versions to issue a critical alert. Defaults to 15.
+
+=head2 -C, --config
+
+Full path to a config file for the AWS Secret and Key. Defaults to ~/.aws/config
+
+=head2 -w, --warning
+
+At what number of application versions to issue a warning. Defaults to 5.
+
+=head2 --help
+
+This output
+
+=head2 -v, --verbose
+
+Enable additional verbosity
+
+=head1 REQUIRES
+
+Perl5.004, L<strict>, L<warnings>, L<Data::Dumper>, L<Nagios::Plugin>, L<Readonly>
+
+=head1 EXPORTS
+
+Nothing
+
+=head1 DESCRIPTION
+
+Sample Perl script.
+
+  1) Confound
+  2) Amaze
+  3) ...
+  4) Profit
+
+=cut
+
+#
+# #######################################################################
+
+# #######################################################################
+# BEGIN
+
+# these need to be outside the BEGIN
+use strict;
+use warnings;
+
+# see this page for an explanation regarding the levels of warnings:
+# http://search.cpan.org/~nwclark/perl-5.8.9/pod/perllexwarn.pod
+no warnings qw( redefine prototype );
+
+BEGIN {
+
+  # use central libs
+  #use lib '/Users/mcox/Devel/WebService-Amazon-ElasticBeanstalk/lib';
+  use AWS::CLI::Config;
+  use Data::Dumper;
+  $Data::Dumper::Purity = 1;
+  use Monitoring::Plugin;
+  use Readonly;
+  use WebService::Amazon::ElasticBeanstalk;
+
+  #use Smart::Comments '###';
+  #use Smart::Comments '###', '####';
+  #use Smart::Comments '###', '####', '#####';
+
+} ## end BEGIN
+
+#
+# #######################################################################
+
+
+# #######################################################################
+# IMPORTANT VARIABLES
+#
+
+# NOTE You almost certainly want to change the values in this first block
+Readonly my $PLUGIN       => 'check_ebn_versions';
+Readonly my $SHORTNAME    => 'EBNVERSIONS';
+Readonly my $DEFAULT_W    => 5;
+Readonly my $DEFAULT_C    => 10;
+Readonly my $DEFAULT_CONF => "$ENV{HOME}/.aws/config";
+Readonly my $DEFAULT_PROF => "default";
+Readonly my $VERSION      => '1.1.1';
+Readonly my $BLURB        => <<BLURB;
+check_ebn_versions returns the total number of Elastic Beanstalk application
+versions deployed under a given IAM realm.
+
+It requires a recent version of Tim Kay's "aws" script
+(http://timkay.com/aws/), which requires that appropriate AWS credentials be
+stored in ~/.awssecret for whichever user will be running check_ebn_versions.
+Only read access is required.
+BLURB
+Readonly my $USAGE    => <<"USAGE";
+Usage: $PLUGIN [ -C|--config=<path to AWS CLI config> ]
+  [ -v|--verbose ] [-t <timeout>] [ -p|--profile=<profile from AWS CLI config to use> ]
+  [ -c|--critical=<critical threshold> ] [ -w|--warning=<warning threshold> ]
+USAGE
+
+# These are reasonable defaults
+Readonly my $URL       => 'https://github.com/matthew-cox/various-nagios-monitors';
+Readonly my $TIMEOUT   => 15;   # Nagios plugin default value
+Readonly my $LICENSE   => <<LICENSE;
+This software is released under the same terms as Perl;
+see http://dev.perl.org/licenses/ for details.
+LICENSE
+
+########################################################################
+# MAIN
+#
+
+my $plugin = Monitoring::Plugin->new(
+  usage     => $USAGE,
+  plugin    => $PLUGIN,
+  shortname => $SHORTNAME,
+  timeout   => $TIMEOUT,
+  version   => $VERSION,
+  url       => $URL,
+  license   => $LICENSE,
+  blurb     => $BLURB,
+) or die( "Unable to instantiate Nagios::Plugin!" );
+
+# standard args - implement these unless you have a really good reason not to
+
+$plugin->add_arg(
+  spec     => 'warning|w=i',
+  label    => 'NUMBER OF APPLICATIONS',
+  help     => 'Warning threshold (default %s)',
+  required => 0,
+  default  => $DEFAULT_W,
+);
+
+$plugin->add_arg(
+  spec     => 'critical|c=i',
+  label    => 'NUMBER OF APPLICATIONS',
+  help     => 'Critical threshold (default: %s)',
+  required => 0,
+  default  => $DEFAULT_C,
+);
+
+# custom args
+
+$plugin->add_arg(
+  spec     => 'config|C=s',
+  label    => 'CONFIG FILE',
+  help     => 'Path to AWS CLI config file (default: %s)',
+  default  => $DEFAULT_CONF,
+  required => 0,
+);
+
+$plugin->add_arg(
+  spec     => 'profile|p=s',
+  label    => 'AWS PROFILE',
+  help     => 'AWS Config profile to use (default: %s)',
+  default  => $DEFAULT_PROF,
+  required => 0,
+);
+
+$plugin->getopts();
+
+# debugging
+our $DEBUG_LEVEL = ( $plugin->opts->verbose || 0 );
+### Verbosity: $DEBUG_LEVEL
+
+# our thresholds work backwards
+$plugin->set_thresholds(
+  warning  => $plugin->opts->warning,
+  critical => $plugin->opts->critical,
+);
+
+AWS::CLI::Config::config( $plugin->opts->config );
+
+my( $value, $perfdata ) = getValue( $plugin->opts->profile )
+  or $plugin->nagios_die( "Unable to get value: $!" );
+
+my $retval = $plugin->check_threshold( $value );
+
+my $message = "value is $value";
+
+if ( defined( $perfdata ) ) {
+  $plugin->add_perfdata( %{$perfdata} )
+    or $plugin->nagios_die( "Unable to parse performance data." );
+}
+
+$plugin->nagios_exit( $retval, $message );
+
+########################################################################
+# SUBS
+#
+
+sub getValue {
+  my( $profile ) = @_;
+  
+  my( %PARAMS ) = ( id     => AWS::CLI::Config::access_key_id( $profile ),
+                    region => AWS::CLI::Config::region( $profile ),
+                    secret => AWS::CLI::Config::secret_access_key( $profile ) );
+
+  my( $ebn ) = WebService::Amazon::ElasticBeanstalk->new( param => \%PARAMS );
+  
+  my( $value, $perfdata );
+
+  # this is where the heavy lifting of the plugin happens
+  # unfortunately, writing it is your job :)
+  eval {
+    # this might time out
+    alarm $plugin->opts->timeout;
+
+    my( $rez ) = $ebn->DescribeApplicationVersions();
+
+    # ok, it didn't time out
+    alarm 0;
+
+    ##### $rez
+
+    if ( defined( $rez->{ApplicationVersions}->{member} ) && ref( $rez->{ApplicationVersions}->{member} ) eq "ARRAY" ) {
+      $value = scalar( @{ $rez->{ApplicationVersions}->{member} } );
+    }
+    else {
+      $plugin->nagios_die( UNKNOWN, "AWS API returned unexpected results..." );
+    }
+  };
+
+  # check for a timeout from the eval
+  if ( $@ ) {
+    $plugin->nagios_die( UNKNOWN, "Timeout occured connecting to AWS API (" . $plugin->opts->timeout . "s)" );
+  }
+
+  ### $value
+
+  $perfdata = {
+    label    => 'versions',
+    value    => $value,
+    uom      => undef,
+    warning  => $plugin->opts->warning,
+    critical => $plugin->opts->critical,
+  };
+
+  return( $value, $perfdata );
+}
+
+# vim: set ft=perl ts=2 sw=2 tw=0 foldmethod=manual :

@@ -108,10 +108,10 @@ Readonly my $BLURB        => <<BLURB;
 check_ebn_versions returns the total number of Elastic Beanstalk application
 versions deployed under a given IAM realm.
 
-It requires a recent version of Tim Kay's "aws" script
-(http://timkay.com/aws/), which requires that appropriate AWS credentials be
-stored in ~/.awssecret for whichever user will be running check_ebn_versions.
+It requires AWS CLI profiles and credentials be configured in ~/.aws/config 
+
 Only read access is required.
+
 BLURB
 Readonly my $USAGE    => <<"USAGE";
 Usage: $PLUGIN [ -C|--config=<path to AWS CLI config> ]

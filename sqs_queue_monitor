@@ -1,0 +1,292 @@
+#!/usr/bin/env perl
+#
+# TODO: Take arbitrary SQS queue metrics and their own warning/critical limits
+#
+# #######################################################################
+# DESCRIPTION
+
+=head1 NAME
+
+sqs_queue_monitor - Watch SQS queue statistics
+
+=head1 AUTHORS
+
+Steve Huff <shuff at vecna dot org>
+Matthew Cox <mcox at cpan dot org
+
+=head1 SYNOPSIS
+
+This is used by Getopt::Long to produce --help output
+
+B<sqs_queue_monitor> [B<--help>] [B<-d>] [B<-z>]
+
+=head2 -c, --critical
+
+At what number of pending messages to issue a critical alert. Defaults to 15.
+
+=head2 -C, --config
+
+Full path to a config file for the AWS Secret and Key. Defaults to ~/.aws/config
+
+=head2 -w, --warning
+
+At what number of pending messages to issue a warning. Defaults to 5.
+
+=head2 --help
+
+This output
+
+=head2 -t, --timeout
+
+Set the number of seconds before timing out when connecting to the AWS API. Defaults to 15
+
+=head2 -v, --verbose
+
+Enable additional verbosity
+
+=head1 REQUIRES
+
+Perl5.004, L<strict>, L<warnings>, L<Smart::Comments>, L<Monitoring::Plugin>, L<Readonly>
+
+=head1 EXPORTS
+
+Nothing
+
+=head1 DESCRIPTION
+
+Sample Perl script.
+
+  1) Confound
+  2) Amaze
+  3) ...
+  4) Profit
+
+=cut
+
+#
+# #######################################################################
+
+# #######################################################################
+# BEGIN
+
+# these need to be outside the BEGIN
+use strict;
+use warnings;
+
+# see this page for an explanation regarding the levels of warnings:
+# http://search.cpan.org/~nwclark/perl-5.8.9/pod/perllexwarn.pod
+no warnings qw( redefine prototype );
+
+BEGIN {
+
+  # use central libs
+  use Amazon::SQS::Simple;
+  use AWS::CLI::Config;
+  use Monitoring::Plugin;
+  use Readonly;
+  
+  # pre-check requested verbosity and load Smart::Comments appropriately
+  my( @d ) = grep( /^v/, split( //, join( '', grep( /^[-]+v/i, @ARGV ) ) ) );
+  if ( scalar( @d ) >= 1 ) {
+    my $c = 3;
+    $ENV{Smart_Comments} = join( ':', map { '#' x $c++ } @d );
+    require Smart::Comments; import Smart::Comments -ENV;
+  };
+
+} ## end BEGIN
+
+#
+# #######################################################################
+
+# #######################################################################
+# IMPORTANT VARIABLES
+#
+
+# NOTE You almost certainly want to change the values in this first block
+Readonly my $PLUGIN       => 'sqs_queue_monitor';
+Readonly my $SHORTNAME    => 'SQS Num Messages';
+Readonly my $DEFAULT_W    => 5;
+Readonly my $DEFAULT_C    => 10;
+Readonly my $DEFAULT_CONF => "$ENV{HOME}/.aws/config";
+Readonly my $DEFAULT_PROF => "default";
+Readonly my $VERSION      => '1.1.1';
+Readonly my $BLURB        => <<BLURB;
+sqs_queue_monitor returns the number of pending messages in an SQS queue.
+
+It requires AWS CLI profiles and credentials be configured in ~/.aws/config 
+
+SQS read access is required.
+
+BLURB
+Readonly my $USAGE    => <<"USAGE";
+Usage: $PLUGIN [ -C|--config=<path to AWS CLI config> ] [ -q|--queue=<queue_name> ]
+  [ -v|--verbose ] [-t <timeout>] [ -p|--profile=<profile from AWS CLI config to use> ]
+  [ -c|--critical=<critical threshold> ] [ -w|--warning=<warning threshold> ]
+USAGE
+
+# These are reasonable defaults
+Readonly my $URL       => 'https://github.com/matthew-cox/various-nagios-monitors';
+Readonly my $TIMEOUT   => 15;   # Nagios plugin default value
+Readonly my $LICENSE   => <<LICENSE;
+This software is released under the same terms as Perl;
+see http://dev.perl.org/licenses/ for details.
+LICENSE
+
+# ######################################################################
+#
+# Nagios Plugin Constructor
+#
+
+my $plugin = Monitoring::Plugin->new(
+  usage     => $USAGE,
+  plugin    => $PLUGIN,
+  shortname => $SHORTNAME,
+  timeout   => $TIMEOUT,
+  version   => $VERSION,
+  url       => $URL,
+  license   => $LICENSE,
+  blurb     => $BLURB,
+) or die( "Unable to instantiate Monitoring::Plugin!" );
+
+# standard args - implement these unless you have a really good reason not to
+
+$plugin->add_arg(
+  spec     => 'warning|w=i',
+  label    => 'NUMBER OF MESSAGES',
+  help     => 'Warning threshold (default %s). See '
+   . 'https://www.monitoring-plugins.org/doc/guidelines.html#THRESHOLDFORMAT '
+   . 'for the threshold format. ',
+  required => 0,
+  default  => $DEFAULT_W,
+);
+
+$plugin->add_arg(
+  spec     => 'critical|c=i',
+  label    => 'NUMBER OF MESSAGES',
+  help     => 'Critical threshold (default: %s). See '
+   . 'https://www.monitoring-plugins.org/doc/guidelines.html#THRESHOLDFORMAT '
+   . 'for the threshold format. ',
+  required => 0,
+  default  => $DEFAULT_C,
+);
+
+# custom args
+
+$plugin->add_arg(
+  spec     => 'queue|q=s',
+  help     => '-q, --queue=SQS_QUEUE_NAME',
+  required => 1
+);
+
+$plugin->add_arg(
+  spec     => 'config|C=s',
+  label    => 'CONFIG FILE',
+  help     => 'Path to AWS CLI config file (default: %s)',
+  default  => $DEFAULT_CONF,
+  required => 0,
+);
+
+$plugin->add_arg(
+  spec     => 'profile|p=s',
+  label    => 'AWS PROFILE',
+  help     => 'AWS Config profile to use (default: %s)',
+  default  => $DEFAULT_PROF,
+  required => 0,
+);
+
+#
+# Parse @ARGV and process standard arguments (e.g. usage, help, version)
+#
+$plugin->getopts;
+#
+# set the threshholds
+#
+$plugin->set_thresholds(
+  warning  => $plugin->opts->warning,
+  critical => $plugin->opts->critical
+);
+
+#
+# Load the AWS CLI config
+#
+AWS::CLI::Config::config( $plugin->opts->config );
+Readonly our $access_key => AWS::CLI::Config::access_key_id( $profile );
+Readonly our $secret_key => AWS::CLI::Config::secret_access_key( $profile );
+
+my( $value, $perfdata ) = getValue( $plugin->opts->profile )
+  or $plugin->nagios_die( "Unable to get value: $!" );
+  
+#
+# do the work carefully
+#
+my( $size ) = undef;
+eval {
+  # set a sig alarm on timeout
+  local $SIG{ALRM} = sub { die "Timeout!\n" };
+  alarm $plugin->opts->timeout;
+
+  # save the queue name
+  my $theQ = $plugin->opts->queue;
+  
+  # start by listing the queues
+  my $sqs = new Amazon::SQS::Simple( $access_key, $secret_key );
+  my( $q ) = $sqs->ListQueues( QueueNamePrefix => $theQ );
+  ### $q
+  
+  if ( scalar( @{$q} ) <= 0 ) {
+    $plugin->plugin_die( UNKNOWN, "Unable to find an SQS queue with that name! Exiting..." );
+  }
+  
+  if ( scalar( @{$q} ) > 5 ) {
+    $plugin->plugin_die( UNKNOWN, "More than five queues found with that prefix! Exiting..." );
+  }
+
+  # loop over the prefix matches
+  my $c = 0;
+  while( $c < scalar( @{$q} ) ) {
+    
+    # the arn and ~messages are stored in the queue attributes
+    my( $opts ) = $q->[$c]->GetAttributes();
+    ### $opts
+    
+    # use the ARN to find the name
+    my( @n ) = split( ':', $opts->{QueueArn} );
+    ### @n
+    
+    my( $n ) = pop( @n );
+    #### n: $n
+
+    if ( "$n" eq "$theQ" ) {
+      # save our results
+      $size = $opts->{ApproximateNumberOfMessages};
+      last;
+    }
+    else {
+      $c++;
+    }
+  }
+
+  if ( !defined( $size ) ) {
+    $plugin->plugin_die( UNKNOWN, "Unable to find an SQS queue with that name! Exiting..." );
+  }
+};
+
+# check for a timeout from the eval
+if ( $@ ) {
+  $plugin->plugin_die( UNKNOWN, "Timeout occured connecting to SQS (" . $plugin->opts->timeout . "s)" );
+}
+
+#
+# for graphs?
+#
+$plugin->add_perfdata(
+  label     => "# messages",
+  value     => $size,
+);
+#
+# Exit/return value methods - nagios_exit( CODE, MESSAGE ), 
+#                             nagios_die( MESSAGE, [CODE])
+$plugin->plugin_exit(
+  return_code => $plugin->check_threshold( $size ),
+  message     => "Queue size is $size"
+);

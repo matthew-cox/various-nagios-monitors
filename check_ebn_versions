@@ -44,7 +44,7 @@ Enable additional verbosity
 
 =head1 REQUIRES
 
-Perl5.004, L<strict>, L<warnings>, L<Data::Dumper>, L<Nagios::Plugin>, L<Readonly>
+Perl5.004, L<strict>, L<warnings>, L<Smart::Comments>, L<Nagios::Plugin>, L<Readonly>
 
 =head1 EXPORTS
 
@@ -80,15 +80,17 @@ BEGIN {
   # use central libs
   #use lib '/Users/mcox/Devel/WebService-Amazon-ElasticBeanstalk/lib';
   use AWS::CLI::Config;
-  use Data::Dumper;
-  $Data::Dumper::Purity = 1;
   use Monitoring::Plugin;
   use Readonly;
   use WebService::Amazon::ElasticBeanstalk;
 
-  #use Smart::Comments '###';
-  #use Smart::Comments '###', '####';
-  #use Smart::Comments '###', '####', '#####';
+  # pre-check requested verbosity and load Smart::Comments appropriately
+  my( @d ) = grep( /^v/, split( //, join( '', grep( /^[-]+v/i, @ARGV ) ) ) );
+  if ( scalar( @d ) >= 1 ) {
+    my $c = 3;
+    $ENV{Smart_Comments} = join( ':', map { '#' x $c++ } @d );
+    require Smart::Comments; import Smart::Comments -ENV;
+  };
 
 } ## end BEGIN
 
@@ -197,7 +199,7 @@ $plugin->set_thresholds(
 AWS::CLI::Config::config( $plugin->opts->config );
 
 my( $value, $perfdata ) = getValue( $plugin->opts->profile )
-  or $plugin->nagios_die( "Unable to get value: $!" );
+  or $plugin->plugin_die( "Unable to get value: $!" );
 
 my $retval = $plugin->check_threshold( $value );
 
@@ -205,10 +207,10 @@ my $message = "value is $value";
 
 if ( defined( $perfdata ) ) {
   $plugin->add_perfdata( %{$perfdata} )
-    or $plugin->nagios_die( "Unable to parse performance data." );
+    or $plugin->plugin_die( "Unable to parse performance data." );
 }
 
-$plugin->nagios_exit( $retval, $message );
+$plugin->plugin_exit( $retval, $message );
 
 ########################################################################
 # SUBS
@@ -242,13 +244,13 @@ sub getValue {
       $value = scalar( @{ $rez->{ApplicationVersions}->{member} } );
     }
     else {
-      $plugin->nagios_die( UNKNOWN, "AWS API returned unexpected results..." );
+      $plugin->plugin_die( UNKNOWN, "AWS API returned unexpected results..." );
     }
   };
 
   # check for a timeout from the eval
   if ( $@ ) {
-    $plugin->nagios_die( UNKNOWN, "Timeout occured connecting to AWS API (" . $plugin->opts->timeout . "s)" );
+    $plugin->plugin_die( UNKNOWN, "Timeout occured connecting to AWS API (" . $plugin->opts->timeout . "s)" );
   }
 
   ### $value

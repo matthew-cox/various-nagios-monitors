@@ -47,7 +47,7 @@ Enable additional verbosity
 
 =head1 REQUIRES
 
-Perl5.004, L<strict>, L<warnings>, L<Data::Dumper>, L<Monitoring::Plugin>, L<Readonly>
+Perl5.004, L<strict>, L<warnings>, L<Smart::Comments>, L<Monitoring::Plugin>, L<Readonly>
 
 =head1 EXPORTS
 
@@ -81,16 +81,17 @@ no warnings qw( redefine prototype );
 BEGIN {
 
   # use central libs
-  use Data::Dumper;
-  $Data::Dumper::Purity = 1;
   use Monitoring::Plugin;
   use Readonly;
   use Redis;
 
-  #use Smart::Comments '###';
-  #use Smart::Comments '###', '####';
-  #use Smart::Comments '###', '####', '#####';
-
+  # pre-check requested verbosity and load Smart::Comments appropriately
+  my( @d ) = grep( /^v/, split( //, join( '', grep( /^[-]+v/i, @ARGV ) ) ) );
+  if ( scalar( @d ) >= 1 ) {
+    my $c = 3;
+    $ENV{Smart_Comments} = join( ':', map { '#' x $c++ } @d );
+    require Smart::Comments; import Smart::Comments -ENV;
+  };
 }
 
 ## end BEGIN
@@ -118,7 +119,7 @@ Usage: $PLUGIN [-Vh?] [ -v|--verbose ] [-t <timeout>] [-H <host>] [-p|--port <se
   [ -c|--critical=<critical seconds> ] [ -w|--warning=<warning seconds> ]
 USAGE
 
-########################################################################
+# #######################################################################
 # MAIN
 #
 

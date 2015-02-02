@@ -34,6 +34,10 @@ At what number of application versions to issue a warning. Defaults to 5.
 
 This output
 
+=head2 -t, --timeout
+
+Set the number of seconds before timing out when connecting to the AWS API. Defaults to 15
+
 =head2 -v, --verbose
 
 Enable additional verbosity
@@ -140,7 +144,7 @@ my $plugin = Monitoring::Plugin->new(
   url       => $URL,
   license   => $LICENSE,
   blurb     => $BLURB,
-) or die( "Unable to instantiate Nagios::Plugin!" );
+) or die( "Unable to instantiate Monitoring::Plugin!" );
 
 # standard args - implement these unless you have a really good reason not to
 

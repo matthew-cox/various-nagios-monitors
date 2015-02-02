@@ -1,0 +1,230 @@
+#!/usr/bin/env perl
+
+# #######################################################################
+# DESCRIPTION
+
+=head1 NAME
+
+check_ebn_versions - keep track of total number of EBN application versions
+
+=head1 AUTHORS
+
+Matthew Cox <mcox at cpan dot org>
+
+=head1 SYNOPSIS
+
+This is used by Getopt::Long to produce --help output
+
+B<check_redis> [B<--help>] [B<-d>] [B<-z>]
+
+=head2 -c, --critical
+
+Critical alert when redis server has been up for less than this number of seconds. Defaults to 5.
+
+=head2 -C, --config
+
+Full path to a config file for the AWS Secret and Key. Defaults to ~/.aws/config
+
+=head2 -H, --host
+
+Redis server hostname to check. Defaults to localhost
+
+=head2 -w, --warning
+
+Warn when redis server has been up for less than this number of seconds. Defaults to 300.
+
+=head2 --help
+
+This output
+
+=head2 -t, --timeout
+
+Set the number of seconds before timing out when connecting to the server. Defaults to 10
+
+=head2 -v, --verbose
+
+Enable additional verbosity
+
+=head1 REQUIRES
+
+Perl5.004, L<strict>, L<warnings>, L<Data::Dumper>, L<Monitoring::Plugin>, L<Readonly>
+
+=head1 EXPORTS
+
+Nothing
+
+=head1 DESCRIPTION
+
+Sample Perl script.
+
+  1) Confound
+  2) Amaze
+  3) ...
+  4) Profit
+
+=cut
+
+#
+# #######################################################################
+
+# #######################################################################
+# BEGIN
+
+# these need to be outside the BEGIN
+use strict;
+use warnings;
+
+# see this page for an explanation regarding the levels of warnings:
+# http://search.cpan.org/~nwclark/perl-5.8.9/pod/perllexwarn.pod
+no warnings qw( redefine prototype );
+
+BEGIN {
+
+  # use central libs
+  use Data::Dumper;
+  $Data::Dumper::Purity = 1;
+  use Monitoring::Plugin;
+  use Readonly;
+  use Redis;
+
+  #use Smart::Comments '###';
+  #use Smart::Comments '###', '####';
+  #use Smart::Comments '###', '####', '#####';
+
+}
+
+## end BEGIN
+# #######################################################################
+
+# #######################################################################
+# IMPORTANT VARIABLES
+#
+
+# NOTE You almost certainly want to change the values in this first block
+Readonly my $PLUGIN    => 'check_redis';
+Readonly my $SHORTNAME => 'REDIS';
+Readonly my $DEFAULT_W => 300;
+Readonly my $DEFAULT_C => 5;
+Readonly my $HOSTNAME  => "localhost";
+Readonly my $TIMEOUT   => 10;
+Readonly my $VERSION   => '1.0.2';
+Readonly my $PORT      => 6379;
+Readonly my $BLURB     => <<BLURB;
+Connect to a redis server and get the uptime.
+
+BLURB
+Readonly my $USAGE     => <<"USAGE";
+Usage: $PLUGIN [-Vh?] [ -v|--verbose ] [-t <timeout>] [-H <host>] [-p|--port <server port>]
+  [ -c|--critical=<critical seconds> ] [ -w|--warning=<warning seconds> ]
+USAGE
+
+########################################################################
+# MAIN
+#
+
+my $plugin = Monitoring::Plugin->new(
+  usage     => $USAGE,
+  plugin    => $PLUGIN,
+  shortname => $SHORTNAME,
+  timeout   => $TIMEOUT,
+  version   => $VERSION,
+  blurb     => $BLURB,
+) or die( "Unable to instantiate Monitoring::Plugin!" );
+
+# standard args - implement these unless you have a really good reason not to
+
+$plugin->add_arg(
+  spec     => 'hostname|H=s',
+  help     => 'Hostname (default %s)',
+  required => 0,
+  default  => $HOSTNAME,
+);
+
+$plugin->add_arg(
+  spec     => 'warning|w=i',
+  help     => [ 'Warning threshold (default %s)' ],
+  required => 0,
+  default  => $DEFAULT_W,
+  label    => [ 'DAYS' ],
+);
+
+$plugin->add_arg(
+  spec     => 'critical|c=i',
+  help     => [ 'Critical threshold (default %s)' ],
+  required => 0,
+  default  => $DEFAULT_C,
+  label    => [ 'DAYS' ],
+);
+
+$plugin->add_arg(
+  spec     => 'timeout|t=i',
+  help     => [ 'Timeout (default %s)' ],
+  required => 0,
+  default  => $TIMEOUT,
+  label    => [ 'SECONDS' ],
+);
+
+$plugin->add_arg(
+  spec     => 'port|p=i',
+  help     => 'Redis Server Port (default %s)',
+  required => 0,
+  default  => $PORT,
+);
+
+$plugin->getopts();
+
+# debugging
+our $DEBUG_LEVEL = ( $plugin->opts->verbose || 0 );
+### Verbosity: $DEBUG_LEVEL
+
+# our thresholds work backwards
+$plugin->set_thresholds(
+  warning  => $plugin->opts->warning  . ":",
+  critical => $plugin->opts->critical . ":",
+);
+
+my $retval  = UNKNOWN;
+my $message = 'Unable to determine status of Redis server';
+
+#
+# do the work carefully
+#
+my( $uptime ) = 0;
+eval {
+  # set a sig alarm on timeout
+  local $SIG{ALRM} = sub { die "Timeout!\n" };
+  alarm $plugin->opts->timeout;
+
+  # create the connection string
+  my( $connStr ) = join( ':', $plugin->opts->hostname, $plugin->opts->port );
+  
+  ### Connecting to host: $connStr
+  my $redis = Redis->new( server => $connStr,
+                          debug  => $plugin->opts->verbose );
+
+  if ( !defined( $redis ) ) {
+    $plugin->plugin_die( CRITICAL, "Unable to connect to Redis server '$connStr': connection refused!" );
+  }
+  
+  my %info = ( %{ $redis->info() } );
+  #### %info
+  
+  $uptime = $info{uptime_in_seconds};
+  ### Uptime: $uptime
+  
+  $redis->quit;
+};
+
+# check for a timeout from the eval
+if ( $@ ) {
+  ### $@
+  $plugin->plugin_die( CRITICAL, "Timeout occured connecting to Redis server (" . $plugin->opts->timeout . "s)" );
+}
+
+# check uptime in seconds
+$plugin->plugin_exit(
+  return_code => $plugin->check_threshold( $uptime ),
+  message     => "Redis server uptime is $uptime"
+);
+
+# vim: set ft=perl ts=2 sw=2 tw=0 foldmethod=manual :

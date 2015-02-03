@@ -44,7 +44,7 @@ Enable additional verbosity
 
 =head1 REQUIRES
 
-Perl5.004, L<strict>, L<warnings>, L<Smart::Comments>, L<Nagios::Plugin>, L<Readonly>
+Perl5.004, L<strict>, L<warnings>, L<Smart::Comments>, L<AWS::CLI::Config>, L<Monitoring::Plugin>, L<Readonly>, L<WebService::Amazon::ElasticBeanstalk>
 
 =head1 EXPORTS
 

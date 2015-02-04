@@ -1,0 +1,322 @@
+#!/usr/bin/env perl
+
+# #######################################################################
+# DESCRIPTION
+
+=head1 NAME
+
+check_aws_limits - check our usage of various limited AWS resources
+
+=head1 AUTHORS
+
+Steve Huff <shuff at vecna dot org>
+Matthew Cox <mcox at cpan dot org>
+
+=head1 SYNOPSIS
+
+Query the AWS Trusted Advisor service to see how we're doing in terms 
+of the various AWS usage limits.
+
+=head1 REQUIRES
+
+Perl5.004, L<strict>, L<warnings>, L<AWS::CLI::Config>, L<Smart::Comments>, L<Monitoring::Plugin>, L<Readonly>, L<JSON>, L<WebService::Amazon::Support>
+
+=head1 EXPORTS
+
+Nothing
+
+=head1 DESCRIPTION
+
+Right now the plugin only returns the number of AWS components in each 
+of their possible states (Red == at the limit, Yellow == >80% of the 
+limit, Green == <80% of the limit), and alerts CRITICAL, WARNING, or 
+OK accordingly, or UNKNOWN in the event of some error.
+
+The account that runs this script must have a standard AWS CLI 
+credentials file configured; there is (deliberately) no mechanism for 
+passing the credentials on the command line.  Also, the IAM account 
+needs the C<trustedadvisor:DescribeTrustedAdvisorChecks> and 
+C<trustedadvisor:DescribeTrustedAdvisorCheckResult> permissions.
+
+=cut
+
+#
+# #######################################################################
+
+# #######################################################################
+# BEGIN
+
+# these need to be outside the BEGIN
+use strict;
+use warnings;
+
+# see this page for an explanation regarding the levels of warnings:
+# http://search.cpan.org/~nwclark/perl-5.8.9/pod/perllexwarn.pod
+no warnings qw( redefine prototype );
+
+BEGIN {
+  # use central libs
+  use AWS::CLI::Config;
+  use JSON;
+  use Monitoring::Plugin;
+  use Readonly;
+  use WebService::Amazon::Support;
+  
+  # pre-check requested verbosity and load Smart::Comments appropriately
+  my( @d ) = grep( /^v/, split( //, join( '', grep( /^[-]+v/i, @ARGV ) ) ) );
+  if ( scalar( @d ) >= 1 ) {
+    my $c = 3;
+    $ENV{Smart_Comments} = join( ':', map { '#' x $c++ } @d );
+    require Smart::Comments; import Smart::Comments -ENV;
+  };
+
+} ## end BEGIN
+
+#
+# #######################################################################
+
+
+# #######################################################################
+# IMPORTANT VARIABLES
+#
+
+# NOTE You almost certainly want to change the values in this first block
+Readonly my $PLUGIN       => 'check_aws_limits';
+Readonly my $SHORTNAME    => 'AWSLIMITS';
+Readonly my $VERSION      => '1.0.2';
+Readonly my $DEFAULT_CONF => "$ENV{HOME}/.aws/config";
+Readonly my $DEFAULT_PROF => "default";
+Readonly my $DEFAULT_REG  => [ 'us-east-1' ];;
+Readonly my $BLURB        => <<BLURB;
+Right now the plugin only returns the number of AWS components in each 
+of their possible states (Red == at the limit, Yellow == >80% of the 
+limit, Green == <80% of the limit), and alerts CRITICAL, WARNING, or 
+OK accordingly, or UNKNOWN in the event of some error.
+BLURB
+Readonly my $USAGE    => <<"USAGE";
+Usage: $PLUGIN [ -a|--aws=<path to aws executable> ] [ -r|--region=<AWS region>, ... ]
+  [-t <timeout>] [ -v|--verbose ]
+USAGE
+
+# These are reasonable defaults
+Readonly my $URL       => 'https://github.com/matthew-cox/various-nagios-monitors';
+Readonly my $TIMEOUT   => 15;   # Nagios plugin default value
+Readonly my $LICENSE   => <<LICENSE;
+This software is released under the same terms as Perl;
+see http://dev.perl.org/licenses/ for details.
+LICENSE
+
+# Some other constants
+Readonly my $SERVICE_LIMITS => 'Service Limits';
+
+########################################################################
+# MAIN
+#
+
+my $plugin = Monitoring::Plugin->new(
+  usage     => $USAGE,
+  plugin    => $PLUGIN,
+  shortname => $SHORTNAME,
+  timeout   => $TIMEOUT,
+  version   => $VERSION,
+  url       => $URL,
+  license   => $LICENSE,
+  blurb     => $BLURB,
+) or die( "Unable to instantiate Monitoring::Plugin!" );
+
+# custom args
+
+$plugin->add_arg(
+  spec     => 'region|r=s@',
+  help     => 'AWS region (default %s)',
+  default  => $DEFAULT_REG,
+  required => 0,
+);
+
+$plugin->add_arg(
+  spec     => 'config|C=s',
+  label    => 'CONFIG FILE',
+  help     => 'Path to AWS CLI config file (default: %s)',
+  default  => $DEFAULT_CONF,
+  required => 0,
+);
+
+$plugin->add_arg(
+  spec     => 'profile|p=s',
+  label    => 'AWS PROFILE',
+  help     => 'AWS Config profile to use (default: %s)',
+  default  => $DEFAULT_PROF,
+  required => 0,
+);
+
+$plugin->getopts();
+
+# debugging
+our $DEBUG_LEVEL = ( $plugin->opts->verbose || 0 );
+### Verbosity: $DEBUG_LEVEL
+
+AWS::CLI::Config::config( $plugin->opts->config );
+my( %PARAMS ) = ( id     => AWS::CLI::Config::access_key_id( $plugin->opts->profile ),
+                  secret => AWS::CLI::Config::secret_access_key( $plugin->opts->profile) );
+
+my( $sup ) = WebService::Amazon::Support->new( param => \%PARAMS );
+
+my $limits = getLimits( $sup ) or $plugin->plugin_die( "Unable to query AWS for limits." );
+
+my( $value, $message, $perfdata ) = getValue( limits => $limits )
+  or $plugin->plugin_die( "Unable to get value: $!" );
+
+if ( defined( $perfdata ) ) {
+  $plugin->add_perfdata( %{$perfdata} )
+    or $plugin->plugin_die( "Unable to parse performance data." );
+}
+
+$plugin->plugin_exit( $value, $message );
+
+########################################################################
+# SUBS
+#
+
+sub getLimits {
+  my( $sup ) = @_;
+
+  my( $regions ) = $plugin->opts->region;
+  my( $decoded, $check_id );
+
+  # do the work
+  eval {
+    alarm $plugin->opts->timeout;    
+    my( $rez ) = $sup->DescribeTrustedAdvisorChecks();
+    ##### $rez
+    foreach my $chk ( @{ $rez->{checks} } ) {
+
+      if ( $chk->{name} eq "$SERVICE_LIMITS" ) {
+        ### $chk
+        $check_id = $chk->{id};
+        last;
+      }
+    }
+
+    # execute the query
+    alarm $plugin->opts->timeout;
+    $decoded = $sup->DescribeTrustedAdvisorCheckResult( checkId => $check_id );
+    alarm 0;
+  };
+
+  ##### $decoded 
+  # parse the JSON
+  #
+  # $decoded: {
+  #             result => {
+  #                         ...
+  #                         flaggedResources => [
+  #                                               {
+  #                                                 isSuppressed => bless( do{\(my $o = 0)}, 'JSON::PP::Boolean' ),
+  #                                                 metadata => [ 'us-east-1', 'AutoScaling', 'Auto Scaling groups', '100', '19', 'Green'
+  #                                                             ],
+  #                                                 region => 'us-east-1',
+  #                                                 resourceId => '7YaaSUFI3pISSczCq_KTLxAWJuV9GadOO7n94G5lEfU',
+  #                                                 status => 'ok'
+  #                                               },
+  #                                               {
+  #                                                 isSuppressed => $VAR1->[0]{result}{flaggedResources}[0]{isSuppressed},
+  #                                                 metadata => [ 'us-east-1', 'AutoScaling', 'Launch configurations', '100', '19', 'Green'
+  #                                                             ],
+  #                                                 region => 'us-east-1',
+  #                                                 resourceId => 'KQDe_j-P1BQhQP73Uj6hjzwoR_YfCf9KI0_ffmBAoqw',
+  #                                                 status => 'ok'
+  #                                               },
+
+  my( $results, $tally );
+
+  while ( my $resource = shift( @{$decoded->{result}->{flaggedResources}} ) ) {
+    my( @m ) = ( @{$resource->{metadata}} );
+    ### @m
+    my( $region, $service, $component, $limit, $used, $color ) = @m;
+
+    # is this an availability zone we care about?
+    if ( scalar( @{$regions} ) ) {
+      my( %regionfilter ) = map { $_ => 1 } @{$regions};
+      next unless defined( $regionfilter{$region} );
+    }
+
+    # this should be unique
+    my $statusname = "$service: $component";
+    my $status = {
+      $statusname => {
+        limit  => $limit,
+        used   => $used,
+        region => $region,
+      },
+    };
+
+    # argh, need to deduplicate
+    unless ( defined( $tally->{$region}->{$statusname} ) ) {
+      push( @{$results->{$region}->{$color}}, $status );
+      $tally->{$region}->{$statusname}++;
+    }
+  }
+
+  return( $results );
+}
+
+
+sub getValue {
+  my( %params ) = @_;
+
+  my $limits = $params{limits}
+    or $plugin->plugin_die( "No limits data obtained" );
+
+  my( $value, $message, $perfdata );
+
+  my( $red, $yellow, $green );
+
+  foreach my $region ( keys( %{$limits} ) ) {
+    # parse out the reds
+    eval { $red += scalar( @{$limits->{$region}->{Red}} ) };
+    # parse out the yellows
+    eval { $yellow += scalar( @{$limits->{$region}->{Yellow}} ) };
+    # parse out the greens
+    eval { $green += scalar( @{$limits->{$region}->{Green}} ) };
+  }
+
+  # analyze the results
+  if ( $red ) {
+    $value = CRITICAL;
+    $message = 'At limits';
+
+    $perfdata = {
+      label    => 'Red',
+      value    => $red,
+      uom      => undef,
+    };
+  }
+  elsif ( $yellow ) {
+    $value = WARNING;
+    $message = 'Near limits';
+
+    $perfdata = {
+      label    => 'Yellow',
+      value    => $yellow,
+      uom      => undef,
+    };
+  }
+  elsif ( $green ) {
+    $value = OK;
+    $message = 'Below limits';
+
+    $perfdata = {
+      label    => 'Green',
+      value    => $green,
+      uom      => undef,
+    };
+  }
+  else {
+    $value = UNKNOWN;
+    $message = 'Cannot determine usage';
+  }
+
+  return( $value, $message, $perfdata );
+}
+
+# vim: set ft=perl ts=2 sw=2 tw=0 foldmethod=manual :

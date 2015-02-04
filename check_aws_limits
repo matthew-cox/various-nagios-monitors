@@ -94,7 +94,7 @@ limit, Green == <80% of the limit), and alerts CRITICAL, WARNING, or
 OK accordingly, or UNKNOWN in the event of some error.
 BLURB
 Readonly my $USAGE    => <<"USAGE";
-Usage: $PLUGIN [ -a|--aws=<path to aws executable> ] [ -r|--region=<AWS region>, ... ]
+Usage: $PLUGIN [ -r|--region=<AWS region>, ... ]
   [-t <timeout>] [ -v|--verbose ]
 USAGE
 

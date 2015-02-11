@@ -210,12 +210,9 @@ $plugin->set_thresholds(
 # Load the AWS CLI config
 #
 AWS::CLI::Config::config( $plugin->opts->config );
-Readonly our $access_key => AWS::CLI::Config::access_key_id( $profile );
-Readonly our $secret_key => AWS::CLI::Config::secret_access_key( $profile );
+Readonly our $access_key => AWS::CLI::Config::access_key_id( $plugin->opts->profile );
+Readonly our $secret_key => AWS::CLI::Config::secret_access_key( $plugin->opts->profile );
 
-my( $value, $perfdata ) = getValue( $plugin->opts->profile )
-  or $plugin->plugin_die( "Unable to get value: $!" );
-  
 #
 # do the work carefully
 #

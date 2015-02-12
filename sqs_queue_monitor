@@ -207,12 +207,18 @@ $plugin->set_thresholds(
 );
 
 #
-# Load the AWS CLI config
+# Load the AWS CLI config - PS: the fact that this module uses this environment variable
 #
-AWS::CLI::Config::config( $plugin->opts->config );
+$ENV{AWS_CONFIG_FILE} = $plugin->opts->config;
+##### %ENV
+AWS::CLI::Config::config( $plugin->opts->profile )
+  or $plugin->plugin_die( UNKNOWN, "Unable to load AWS credentials..." );
 Readonly our $access_key => AWS::CLI::Config::access_key_id( $plugin->opts->profile );
 Readonly our $secret_key => AWS::CLI::Config::secret_access_key( $plugin->opts->profile );
 
+if ( !defined( $access_key ) or !defined( $secret_key ) ) {
+  $plugin->plugin_die( UNKNOWN, "Unable to load AWS credentials..." );
+}
 #
 # do the work carefully
 #

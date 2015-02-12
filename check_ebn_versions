@@ -196,7 +196,13 @@ $plugin->set_thresholds(
   critical => $plugin->opts->critical,
 );
 
-AWS::CLI::Config::config( $plugin->opts->config );
+#
+# Load the AWS CLI config - PS: the fact that this module uses this environment variable
+#
+$ENV{AWS_CONFIG_FILE} = $plugin->opts->config;
+##### %ENV
+AWS::CLI::Config::config( $plugin->opts->profile )
+  or $plugin->plugin_die( UNKNOWN, "Unable to load AWS credentials..." );
 
 my( $value, $perfdata ) = getValue( $plugin->opts->profile )
   or $plugin->plugin_die( "Unable to get value: $!" );

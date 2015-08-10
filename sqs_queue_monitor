@@ -28,6 +28,10 @@ At what number of pending messages to issue a critical alert. Defaults to 15.
 
 Full path to a config file for the AWS Secret and Key. Defaults to ~/.aws/config
 
+=head2 -H, --hush
+
+Ignore timeouts and generally do not set an UNKNOWN state. Defaults to false
+
 =head2 -w, --warning
 
 At what number of pending messages to issue a warning. Defaults to 5.
@@ -109,6 +113,7 @@ Readonly my $DEFAULT_W    => 5;
 Readonly my $DEFAULT_C    => 10;
 Readonly my $DEFAULT_CONF => "$ENV{HOME}/.aws/config";
 Readonly my $DEFAULT_PROF => "default";
+Readonly my $DEFAULT_HUSH => 0;
 Readonly my $VERSION      => '1.1.1';
 Readonly my $BLURB        => <<BLURB;
 sqs_queue_monitor returns the number of pending messages in an SQS queue.
@@ -122,6 +127,7 @@ Readonly my $USAGE    => <<"USAGE";
 Usage: $PLUGIN [ -C|--config=<path to AWS CLI config> ] [ -q|--queue=<queue_name> ]
   [ -v|--verbose ] [-t <timeout>] [ -p|--profile=<profile from AWS CLI config to use> ]
   [ -c|--critical=<critical threshold> ] [ -w|--warning=<warning threshold> ]
+  [ -H|--hush ]
 USAGE
 
 # These are reasonable defaults
@@ -187,10 +193,26 @@ $plugin->add_arg(
 );
 
 $plugin->add_arg(
+  spec     => 'hush|H',
+  label    => 'Hush',
+  help     => 'Ignore timeouts and generally do not set an UNKNOWN state',
+  default  => $DEFAULT_HUSH,
+  required => 0,
+);
+
+$plugin->add_arg(
   spec     => 'profile|p=s',
   label    => 'AWS PROFILE',
   help     => 'AWS Config profile to use (default: %s)',
   default  => $DEFAULT_PROF,
+  required => 0,
+);
+
+$plugin->add_arg(
+  spec     => 'verbose|v+',
+  label    => 'Verbose',
+  help     => 'Increase verbosity',
+  default  => 0,
   required => 0,
 );
 
@@ -199,11 +221,11 @@ $plugin->add_arg(
 #
 $plugin->getopts;
 #
-# set the threshholds
+# set the threshholds - NOTE use of ~: to indicate negative infinity
 #
 $plugin->set_thresholds(
-  warning  => $plugin->opts->warning,
-  critical => $plugin->opts->critical
+  warning  => "~:" . $plugin->opts->warning,
+  critical => "~:" . $plugin->opts->critical
 );
 
 #
@@ -222,7 +244,7 @@ if ( !defined( $access_key ) or !defined( $secret_key ) ) {
 #
 # do the work carefully
 #
-my( $size ) = undef;
+my( $size ) = -1;
 eval {
   # set a sig alarm on timeout
   local $SIG{ALRM} = sub { die "Timeout!\n" };
@@ -275,7 +297,8 @@ eval {
 };
 
 # check for a timeout from the eval
-if ( $@ ) {
+if ( $@ && ! $plugin->opts->hush ) {
+  $plugin->opts->verbose && print $@;
   $plugin->plugin_die( UNKNOWN, "Timeout occured connecting to SQS (" . $plugin->opts->timeout . "s)" );
 }
 

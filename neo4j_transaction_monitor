@@ -54,7 +54,7 @@ BEGIN {
 Readonly my $HA_CMD => 'dbinfo -g "High Availability"';
 
 # Can I re-use this?
-Readonly my $SERVICE_NAME => "Neo4j"
+Readonly my $SERVICE_NAME => "Neo4j";
 
 # NOTE You almost certainly want to change the values in this first block
 Readonly my $PLUGIN       => 'neo4j_transaction_monitor';
@@ -183,16 +183,36 @@ sub find_shell {
 sub _neo4jShell {
   ### Enter: (caller(0))[3]
   my ( $neo_shell, $neo_host, $neo_port, $neo_cmd ) = @_;
-  my ( $OUTPUT );
+  my ( $OUTPUT, $exit );
 
-  open( my $shell_cmd, "$neo_shell -host $neo_host -port $neo_port -readonly -c '$neo_cmd' 2>/dev/null |" )
-    or return undef;
-  chomp( ( $OUTPUT ) = <$shell_cmd> );
-  close( $shell_cmd );
-  
+  eval {
+    # set a sig alarm on timeout
+    local $SIG{ALRM} = sub { die "Timeout!\n" };
+    alarm 15;
+    my( $the_cmd ) = "$neo_shell -host $neo_host -port $neo_port -readonly -c '$neo_cmd'";
+    ### $the_cmd
+    # using backticks for the alarm
+    $OUTPUT = join( '', `$the_cmd 2>/dev/null` );
+    $exit   = $? >> 8;
+
+    alarm 0;
+  };
+
+  if ( $@ or $exit ) {
+    return undef;
+  }
+  #### $OUTPUT
   my( $results ) = decode_json $OUTPUT;
   return $results;
 }
+
+#
+# sub _uriSplit() - Borrowed from URI.pm
+#
+sub _uriSplit {
+     return $_[0] =~ m,(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?,;
+}
+
 #
 # do the work carefully
 #
@@ -202,10 +222,36 @@ eval {
   local $SIG{ALRM} = sub { die "Timeout!\n" };
   alarm $plugin->opts->timeout;
 
-  my( $results ) = _neo4jShell( $NEO_SHELL, $$plugin->opts->host, $$plugin->opts->port, $HA_CMD );
-  ### $results
+  my( $results ) = _neo4jShell( $NEO_SHELL, $plugin->opts->host, $plugin->opts->port, $HA_CMD );
+  ##### $results
 
-  my( $now ) = time();
+  my( $my_tx_id ) = $results->{LastCommittedTxId};
+  my( $master_tx_id ) = 0;
+
+  if ( $results->{Role} =~ /slave/i ) {
+    my( $cluster ) = $results->{InstancesInCluster};
+
+    foreach my $server ( @{ $cluster } ) {
+      if ( $server->{haRole} =~ /master/i ) {
+        #### Master: $server
+        my( @uri ) = _uriSplit( pop( @{$server->{uris}} ) );
+        #### @uri
+        my( $master ) = split( ':', $uri[1] );
+        ### Master IP: $master
+        my( $master_results ) = _neo4jShell( $NEO_SHELL, $master, $plugin->opts->port, $HA_CMD );
+	if ( !defined( $master_results ) ) {
+	  $plugin->plugin_die( UNKNOWN, "Unable to contact $SERVICE_NAME cluster master! Exiting..." );
+	}
+
+        $master_tx_id = $master_results->{LastCommittedTxId};
+        $drift = abs( $my_tx_id - $master_tx_id );
+      }
+    }
+  }
+  else {
+    $drift = 0;
+  }
+
   if ( !defined( $drift ) ) {
     $plugin->plugin_die( UNKNOWN, "Unable to calculate $SERVICE_NAME drift! Exiting..." );
   }

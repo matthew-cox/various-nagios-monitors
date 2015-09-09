@@ -1,0 +1,233 @@
+#!/usr/bin/env perl
+#
+# TODO: Use JMX endpoints rather than neo4j-shell
+#
+# #######################################################################
+# DESCRIPTION
+
+=head1 NAME
+
+neo4j_transaction_monitor - Observe last transaction id and compare to master
+
+=head1 AUTHORS
+
+Matthew Cox <mcox at cpan dot org>
+
+=cut
+#
+# #######################################################################
+# BEGIN
+
+# these need to be outside the BEGIN
+use strict;
+use warnings;
+
+# see this page for an explanation regarding the levels of warnings:
+# http://search.cpan.org/~nwclark/perl-5.8.9/pod/perllexwarn.pod
+no warnings qw( redefine prototype );
+
+BEGIN {
+
+  # use central libs
+  use JSON;
+  use Monitoring::Plugin;
+  use Readonly;
+  
+  # pre-check requested verbosity and load Smart::Comments appropriately
+  my( @d ) = grep( /^v/, split( //, join( '', grep( /^[-]+v/i, @ARGV ) ) ) );
+  if ( scalar( @d ) >= 1 ) {
+    my $c = 3;
+    $ENV{Smart_Comments} = join( ':', map { '#' x $c++ } @d );
+    require Smart::Comments; import Smart::Comments -ENV;
+  };
+
+} ## end BEGIN
+
+#
+# #######################################################################
+
+# #######################################################################
+# IMPORTANT VARIABLES
+#
+
+# Run this command against Neo4j - Adding up top to make it visible
+Readonly my $HA_CMD => 'dbinfo -g "High Availability"';
+
+# Can I re-use this?
+Readonly my $SERVICE_NAME => "Neo4j"
+
+# NOTE You almost certainly want to change the values in this first block
+Readonly my $PLUGIN       => 'neo4j_transaction_monitor';
+Readonly my $SHORTNAME    => "$SERVICE_NAME Transaction Delta";
+Readonly my $DEFAULT_W    => 120;
+Readonly my $DEFAULT_C    => 300;
+Readonly my $DEFAULT_HOST => "localhost";
+Readonly my $DEFAULT_PORT => 1337;
+Readonly my $VERSION      => '0.0.1';
+Readonly my $BLURB        => <<BLURB;
+neo4j_replication_monitor returns the number seconds since the last update time.
+
+Connectivity to the $SERVICE_NAME server is required.
+BLURB
+Readonly my $USAGE    => <<"USAGE";
+Usage: $PLUGIN [ -h|--host=<$SERVICE_NAME host to test> ] [ -p|--port=<port number> ] [-t <timeout>] 
+  [ -v|--verbose ] [ -c|--critical=<critical threshold> ] [ -w|--warning=<warning threshold> ]
+USAGE
+
+# These are reasonable defaults
+Readonly my $URL       => 'https://github.com/matthew-cox/various-nagios-monitors';
+Readonly my $TIMEOUT   => 15;   # Nagios plugin default value
+Readonly my $LICENSE   => <<LICENSE;
+This software is released under the same terms as Perl; see http://dev.perl.org/licenses/ for details.
+LICENSE
+
+# ######################################################################
+#
+# Nagios Plugin Constructor
+#
+
+my $plugin = Monitoring::Plugin->new(
+  usage     => $USAGE,
+  plugin    => $PLUGIN,
+  shortname => $SHORTNAME,
+  timeout   => $TIMEOUT,
+  version   => $VERSION,
+  url       => $URL,
+  license   => $LICENSE,
+  blurb     => $BLURB,
+) or die( "Unable to instantiate Monitoring::Plugin!" );
+
+# standard args - implement these unless you have a really good reason not to
+
+$plugin->add_arg(
+  spec     => 'warning|w=i',
+  label    => 'DELAY IN NUMBER OF TRANSACTIONS',
+  help     => 'Warning threshold (default %s). See '
+   . 'https://www.monitoring-plugins.org/doc/guidelines.html#THRESHOLDFORMAT '
+   . 'for the threshold format. ',
+  required => 0,
+  default  => $DEFAULT_W,
+);
+
+$plugin->add_arg(
+  spec     => 'critical|c=i',
+  label    => 'DELAY IN NUMBER OF TRANSACTIONS',
+  help     => 'Critical threshold (default: %s). See '
+   . 'https://www.monitoring-plugins.org/doc/guidelines.html#THRESHOLDFORMAT '
+   . 'for the threshold format. ',
+  required => 0,
+  default  => $DEFAULT_C,
+);
+
+# custom args
+
+$plugin->add_arg(
+  spec     => 'host|H=s',
+  label    => "${SERVICE_NAME}_HOST",
+  help     => 'Domain name or IP of host to connect to (default: %s)',
+  default  => $DEFAULT_HOST,
+  required => 0,
+);
+
+$plugin->add_arg(
+  spec     => 'port|p=s',
+  label    => "${SERVICE_NAME}_PORT",
+  help     => 'Port of host to connect to (default: %s)',
+  default  => $DEFAULT_PORT,
+  required => 0,
+);
+#
+# #####################################################################
+#
+# Parse @ARGV and process standard arguments (e.g. usage, help, version)
+#
+$plugin->getopts;
+#
+# set the threshholds
+#
+$plugin->set_thresholds(
+  warning  => ":" . $plugin->opts->warning,
+  critical => ":" . $plugin->opts->critical
+);
+#
+# Find the neo4j-shell
+#
+Readonly my $NEO_SHELL => find_shell();
+### Neo shell: $NEO_SHELL
+#
+# #####################################################################
+#
+# Sub-routines
+#
+# sub find_shell() - Ensure that neo4j-shell is in the PATH
+#
+sub find_shell {
+  ### Enter: (caller(0))[3]
+  my( $errMsg ) = "Unable to find the neo4j-shell. Are we on a $SERVICE_NAME server?$/";
+  no warnings 'uninitialized';
+  open( my $which, "which neo4j-shell 2>/dev/null |" )
+    or $plugin->plugin_die( UNKNOWN, $errMsg );
+  chomp( my ( $neo_shell ) = <$which> );
+  close( $which );
+  ### neo4j-shell: $neo_shell
+
+  if ( !defined( $neo_shell ) or !-x $neo_shell ) {
+    $plugin->plugin_die( UNKNOWN, $errMsg );
+  }
+  return $neo_shell;
+}
+# #####################################################################
+#
+# sub _neo4jShell() - Execute a command in the neo4j shell handling timeouts and other errors
+#
+sub _neo4jShell {
+  ### Enter: (caller(0))[3]
+  my ( $neo_shell, $neo_host, $neo_port, $neo_cmd ) = @_;
+  my ( $OUTPUT );
+
+  open( my $shell_cmd, "$neo_shell -host $neo_host -port $neo_port -readonly -c '$neo_cmd' 2>/dev/null |" )
+    or return undef;
+  chomp( ( $OUTPUT ) = <$shell_cmd> );
+  close( $shell_cmd );
+  
+  my( $results ) = decode_json $OUTPUT;
+  return $results;
+}
+#
+# do the work carefully
+#
+my( $drift );
+eval {
+  # set a sig alarm on timeout
+  local $SIG{ALRM} = sub { die "Timeout!\n" };
+  alarm $plugin->opts->timeout;
+
+  my( $results ) = _neo4jShell( $NEO_SHELL, $$plugin->opts->host, $$plugin->opts->port, $HA_CMD );
+  ### $results
+
+  my( $now ) = time();
+  if ( !defined( $drift ) ) {
+    $plugin->plugin_die( UNKNOWN, "Unable to calculate $SERVICE_NAME drift! Exiting..." );
+  }
+};
+
+# check for a timeout from the eval
+if ( $@ ) {
+  $plugin->opts->verbose && print $@;
+  $plugin->plugin_die( UNKNOWN, "Timeout occured connecting to $SERVICE_NAME (" . $plugin->opts->timeout . "s)" );
+}
+
+#
+# for graphs?
+#
+$plugin->add_perfdata(
+  label     => "Delay Seconds",
+  value     => $drift,
+);
+#
+# Exit/return value methods - plugin_exit( CODE, MESSAGE ), 
+#                             plugin_die( MESSAGE, [CODE])
+$plugin->plugin_exit(
+  return_code => $plugin->check_threshold( $drift ),
+  message     => "Delay seconds are $drift"
+);
